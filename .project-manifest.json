@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "name": "solo-0026-audiovisual-sync-conformer",
+  "project_shape": "backend",
+  "summary": "Go service for drift analysis and conformed review bundles across PCM WAV and Y4M media.",
+  "modules": [
+    {
+      "id": "httpapi",
+      "path": "internal/httpapi",
+      "responsibility": "Public routes, bounded JSON decoding, JSON errors, and media responses."
+    },
+    {
+      "id": "service",
+      "path": "internal/service",
+      "responsibility": "Take admission, sync analysis, conform orchestration, idempotency, and state transitions."
+    },
+    {
+      "id": "domain",
+      "path": "internal/domain",
+      "responsibility": "Identifiers, records, state rules, validation policy, and stable errors."
+    },
+    {
+      "id": "media",
+      "path": "internal/media",
+      "responsibility": "WAV and Y4M probing, event detection, audio alignment, and bundle encoding."
+    },
+    {
+      "id": "storage",
+      "path": "internal/storage",
+      "responsibility": "Namespaced persistence, per-identity locking, atomic files, and atomic directory publication."
+    }
+  ],
+  "complexity": {
+    "mechanisms": [
+      "state_transition",
+      "error_propagation",
+      "resource_lifecycle",
+      "concurrency",
+      "atomic_commit",
+      "validation_boundary"
+    ]
+  },
+  "workflows": [
+    {
+      "id": "admit-take",
+      "name": "Admit media take",
+      "entry": "POST /v1/takes",
+      "steps": [
+        "Validate identifiers, request size, and strict base64 payloads",
+        "Probe every WAV chunk and every Y4M frame",
+        "Measure descriptors and compute a combined digest",
+        "Commit a complete take directory under an exclusive identifier"
+      ],
+      "success": "Returns an admitted immutable take that can be read back.",
+      "failure": "Returns a stable validation or conflict error and leaves no visible partial take.",
+      "verification": "The admit check creates calibration media, races two conflicting admissions, reads the accepted take, and rejects malformed media.",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "media",
+        "storage"
+      ]
+    },
+    {
+      "id": "analyze-sync",
+      "name": "Analyze audiovisual drift",
+      "entry": "POST /v1/takes/{take_id}/sync-analyses",
+      "steps": [
+        "Load the admitted take and create a queued analysis",
+        "Decode both media payloads at the analysis boundary",
+        "Detect transient and flash events and compare their timing",
+        "Persist a terminal ready or failed analysis"
+      ],
+      "success": "Returns a ready analysis with event times, signed offset, confidence, and drift.",
+      "failure": "Returns a terminal failed analysis with a stable error code and no event pair.",
+      "verification": "The analysis check processes a calibration pair with a known 125 ms offset and reads it back from persistent storage.",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "media",
+        "storage"
+      ]
+    },
+    {
+      "id": "render-conform",
+      "name": "Render conformed bundle",
+      "entry": "POST /v1/sync-analyses/{analysis_id}/conforms",
+      "steps": [
+        "Require a ready analysis and enforce the correction ceiling",
+        "Align audio samples by the inverse measured offset",
+        "Re-emit validated Y4M geometry and compute the receipt",
+        "Commit the ZIP and receipt through one atomic directory rename"
+      ],
+      "success": "Returns a completed conform whose bundle and receipt bytes agree.",
+      "failure": "Returns a terminal failed conform with a stable code and no readable bundle.",
+      "verification": "The conform check renders a bundle, verifies aligned audio timing and archive entries, and rejects a correction above the ceiling.",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "media",
+        "storage"
+      ]
+    }
+  ]
+}

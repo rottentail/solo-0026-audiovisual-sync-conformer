@@ -1,0 +1,265 @@
+{
+  "task_source_schema_version": 1,
+  "name": "audiovisual-sync-conformer",
+  "project_shape": "backend",
+  "modules": [
+    {
+      "id": "httpapi",
+      "path": "internal/httpapi",
+      "responsibility": "bounded public transport and stable response mapping"
+    },
+    {
+      "id": "service",
+      "path": "internal/service",
+      "responsibility": "workflow orchestration and lifecycle control"
+    },
+    {
+      "id": "domain",
+      "path": "internal/domain",
+      "responsibility": "entities, validation policy, and state invariants"
+    },
+    {
+      "id": "media",
+      "path": "internal/media",
+      "responsibility": "media probing, event analysis, transforms, and bundle encoding"
+    },
+    {
+      "id": "storage",
+      "path": "internal/storage",
+      "responsibility": "exclusive identity locks and atomic persistence"
+    }
+  ],
+  "complexity": {
+    "mechanisms": [
+      "state_transition",
+      "error_propagation",
+      "resource_lifecycle",
+      "concurrency",
+      "atomic_commit"
+    ]
+  },
+  "entities": [
+    {
+      "id": "media_take",
+      "label": "Media take",
+      "relations": [
+        "sync_analysis.belongs_to.media_take",
+        "media_take.contains.audio_payload",
+        "media_take.contains.picture_payload"
+      ],
+      "invariants": [
+        "The combined digest describes exactly the stored audio and picture bytes",
+        "A take identifier resolves to one immutable record",
+        "A failed probe leaves no visible take directory"
+      ]
+    },
+    {
+      "id": "sync_analysis",
+      "label": "Sync analysis",
+      "relations": [
+        "sync_analysis.references.media_take",
+        "conform_job.requires.sync_analysis"
+      ],
+      "invariants": [
+        "A ready analysis has finite event times and a signed offset",
+        "Terminal analysis records cannot be rewritten",
+        "A failed analysis cannot produce a conform"
+      ]
+    },
+    {
+      "id": "conform_job",
+      "label": "Conform job",
+      "relations": [
+        "conform_job.executes.sync_analysis",
+        "conform_job.produces.conform_receipt",
+        "conform_job.produces.review_bundle"
+      ],
+      "invariants": [
+        "Completed and failed are terminal",
+        "A completed job exposes one bundle whose digest matches its receipt",
+        "A failed job exposes no bundle route"
+      ]
+    },
+    {
+      "id": "conform_receipt",
+      "label": "Conform receipt",
+      "relations": [
+        "conform_receipt.belongs_to.conform_job"
+      ],
+      "invariants": [
+        "The receipt records the exact applied sample correction",
+        "The receipt bundle digest equals the visible ZIP digest",
+        "The receipt picture frame count equals the admitted take"
+      ]
+    }
+  ],
+  "state_machines": [
+    {
+      "subject": "media_take",
+      "states": [
+        "validating",
+        "admitted"
+      ],
+      "transitions": [
+        "validating->admitted"
+      ],
+      "invariants": [
+        "Only a fully probed take becomes admitted",
+        "An identical retry returns the existing admitted record",
+        "A conflicting identifier reuse never replaces the existing record"
+      ]
+    },
+    {
+      "subject": "sync_analysis",
+      "states": [
+        "queued",
+        "detecting",
+        "ready",
+        "failed"
+      ],
+      "transitions": [
+        "queued->detecting",
+        "detecting->ready",
+        "queued->failed",
+        "detecting->failed"
+      ],
+      "invariants": [
+        "Ready and failed are terminal",
+        "Only ready analyses expose a usable event pair",
+        "Only ready analyses can start a conform"
+      ]
+    },
+    {
+      "subject": "conform_job",
+      "states": [
+        "queued",
+        "rendering",
+        "committing",
+        "completed",
+        "failed"
+      ],
+      "transitions": [
+        "queued->rendering",
+        "rendering->committing",
+        "committing->completed",
+        "queued->failed",
+        "rendering->failed",
+        "committing->failed"
+      ],
+      "invariants": [
+        "Completed and failed are terminal",
+        "A visible completed bundle has a matching receipt",
+        "Temporary bundle content is removed after failure"
+      ]
+    }
+  ],
+  "capability_families": [
+    {
+      "family": "PCM WAV admission",
+      "occupied_by": [
+        "riff_chunk_probe",
+        "pcm_sample_decoder",
+        "peak_measurement"
+      ],
+      "available": false
+    },
+    {
+      "family": "Y4M picture admission",
+      "occupied_by": [
+        "c420_header_probe",
+        "frame_plane_decoder",
+        "luma_measurement"
+      ],
+      "available": false
+    },
+    {
+      "family": "Event matching",
+      "occupied_by": [
+        "audio_onset_detection",
+        "picture_flash_detection",
+        "signed_offset_confidence"
+      ],
+      "available": false
+    },
+    {
+      "family": "Conformed bundle",
+      "occupied_by": [
+        "audio_time_alignment",
+        "deterministic_zip",
+        "receipt_digest"
+      ],
+      "available": false
+    },
+    {
+      "family": "Lifecycle and atomic persistence",
+      "occupied_by": [
+        "terminal_state_rules",
+        "identity_locking",
+        "temporary_publication"
+      ],
+      "available": false
+    },
+    {
+      "family": "Timed caption pipeline",
+      "occupied_by": [],
+      "available": true
+    },
+    {
+      "family": "Resampling and rate conversion",
+      "occupied_by": [],
+      "available": true
+    },
+    {
+      "family": "Additional media adapters",
+      "occupied_by": [],
+      "available": true
+    }
+  ],
+  "extension_seams": [
+    {
+      "id": "media-probe-registry",
+      "anchor": "internal/media InspectAudio and InspectVideo",
+      "entry": "POST /v1/takes",
+      "distinct_outcome": "A second audio or picture format can be admitted while preserving take and storage contracts.",
+      "mechanism": "validation_boundary"
+    },
+    {
+      "id": "event-detector-policy",
+      "anchor": "internal/media DetectAudioOnset and DetectPictureFlash",
+      "entry": "POST /v1/takes/{take_id}/sync-analyses",
+      "distinct_outcome": "Adaptive thresholds can change event selection without changing analysis states or public fields.",
+      "mechanism": "deterministic_recompute"
+    },
+    {
+      "id": "correction-policy",
+      "anchor": "internal/media AlignAudio and domain correction bounds",
+      "entry": "POST /v1/sync-analyses/{analysis_id}/conforms",
+      "distinct_outcome": "Fractional-rate correction can replace integer sample alignment while preserving receipt semantics.",
+      "mechanism": "transform_strategy"
+    },
+    {
+      "id": "repository-boundary",
+      "anchor": "internal/storage Repository methods used by every workflow",
+      "entry": "take, analysis, and conform service calls",
+      "distinct_outcome": "A transactional repository can replace the current storage layout without changing HTTP or media contracts.",
+      "mechanism": "storage_boundary"
+    }
+  ],
+  "tension_points": [
+    {
+      "workflow_id": "admit-take",
+      "description": "Computing a combined digest before publication versus exposing payloads while an identifier race is still unresolved",
+      "observable_failure": "Two concurrent admissions both appear accepted, or a digest points to bytes different from the stored payloads."
+    },
+    {
+      "workflow_id": "analyze-sync",
+      "description": "Choosing the strongest picture flash versus requiring a statistically distinct audio onset at a compatible time",
+      "observable_failure": "A confident-looking analysis pairs unrelated events, or a failed analysis retains usable event times."
+    },
+    {
+      "workflow_id": "render-conform",
+      "description": "Applying the exact audio correction versus refusing an offset beyond the operator ceiling and preserving identity-time picture",
+      "observable_failure": "Audio is moved farther than requested, or a failed conform leaves a fetchable partial archive."
+    }
+  ]
+}

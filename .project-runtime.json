@@ -1,0 +1,23 @@
+{
+  "language": "go",
+  "project_shape": "backend",
+  "source_extensions": [
+    ".go"
+  ],
+  "build_command": "go build ./...",
+  "testing": "deferred",
+  "workflow_checks": [
+    {
+      "workflow_id": "admit-take",
+      "command": "go run ./cmd/syncflowcheck -workflow admit-take"
+    },
+    {
+      "workflow_id": "analyze-sync",
+      "command": "go run ./cmd/syncflowcheck -workflow analyze-sync"
+    },
+    {
+      "workflow_id": "render-conform",
+      "command": "go run ./cmd/syncflowcheck -workflow render-conform"
+    }
+  ]
+}
