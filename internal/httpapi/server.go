@@ -32,6 +32,8 @@ type createAnalysisRequest struct {
 type createConformRequest struct {
 	ConformID       string `json:"conform_id"`
 	MaxCorrectionMS *int   `json:"max_correction_ms"`
+	TargetFPSNum    *int   `json:"target_fps_num"`
+	TargetFPSDen    *int   `json:"target_fps_den"`
 }
 
 func New(service *appservice.Service) *API {
@@ -140,6 +142,8 @@ func (api *API) createConform(w http.ResponseWriter, request *http.Request) {
 	result, err := api.service.CreateConform(request.PathValue("analysis_id"), domain.CreateConformInput{
 		ConformID:       payload.ConformID,
 		MaxCorrectionMS: maxCorrectionMS,
+		TargetFPSNum:    payload.TargetFPSNum,
+		TargetFPSDen:    payload.TargetFPSDen,
 	})
 	if err != nil {
 		writeFailure(w, err)

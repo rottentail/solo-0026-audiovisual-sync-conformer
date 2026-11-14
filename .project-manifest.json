@@ -22,7 +22,7 @@
     {
       "id": "media",
       "path": "internal/media",
-      "responsibility": "WAV and Y4M probing, event detection, audio alignment, and bundle encoding."
+      "responsibility": "WAV and Y4M probing, event detection, audio alignment, duration-preserving frame-rate conversion, and bundle encoding."
     },
     {
       "id": "storage",
@@ -96,6 +96,27 @@
       "success": "Returns a completed conform whose bundle and receipt bytes agree.",
       "failure": "Returns a terminal failed conform with a stable code and no readable bundle.",
       "verification": "The conform check renders a bundle, verifies aligned audio timing and archive entries, and rejects a correction above the ceiling.",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "media",
+        "storage"
+      ]
+    },
+    {
+      "id": "convert-frame-rate",
+      "name": "Convert picture frame rate",
+      "entry": "POST /v1/sync-analyses/{analysis_id}/conforms",
+      "steps": [
+        "Validate the all-or-nothing target frame-rate pair against the Y4M bounds",
+        "Re-time frames to the target constant rate with nearest-center selection",
+        "Hold playback duration within one output frame and leave audio samples untouched",
+        "Record separate source and output picture descriptors on job and receipt"
+      ],
+      "success": "Returns a completed conform whose output picture plays for the source duration at the target rate, with audio still aligned near the clapper and tail.",
+      "failure": "Returns a terminal failed conform with a stable code and no readable bundle; a half-supplied rate is an invalid request.",
+      "verification": "The frame-rate check converts 24 fps to 30 fps and to a fractional rate, verifies clapper and tail flash timing plus unchanged audio, rejects label-only relabeling, and confirms legacy requests keep the source rate.",
       "module_ids": [
         "httpapi",
         "service",

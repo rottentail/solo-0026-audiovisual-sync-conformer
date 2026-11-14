@@ -60,37 +60,62 @@ type SyncAnalysis struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+// PictureDescriptor captures one picture stream exactly as it is described by
+// its Y4M header, so a conform record can separate the admitted source picture
+// from the picture actually written into the review bundle.
+type PictureDescriptor struct {
+	FPSNum     int    `json:"fps_num"`
+	FPSDen     int    `json:"fps_den"`
+	FrameCount int    `json:"frame_count"`
+	DurationMS int    `json:"duration_ms"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	Chroma     string `json:"chroma"`
+	Digest     string `json:"digest"`
+	ByteCount  int    `json:"byte_count"`
+}
+
 type ConformJob struct {
-	ID                string    `json:"id"`
-	AnalysisID        string    `json:"analysis_id"`
-	TakeID            string    `json:"take_id"`
-	State             string    `json:"state"`
-	MaxCorrectionMS   int       `json:"max_correction_ms"`
-	MeasuredOffsetMS  int       `json:"measured_offset_ms"`
-	AppliedOffsetMS   int       `json:"applied_offset_ms"`
-	AppliedSamples    int       `json:"applied_samples"`
-	AudioOutputDigest string    `json:"audio_output_digest,omitempty"`
-	VideoOutputDigest string    `json:"video_output_digest,omitempty"`
-	BundleDigest      string    `json:"bundle_digest,omitempty"`
-	BundleBytes       int       `json:"bundle_bytes,omitempty"`
-	ErrorCode         string    `json:"error_code,omitempty"`
-	ErrorMessage      string    `json:"error_message,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                string            `json:"id"`
+	AnalysisID        string            `json:"analysis_id"`
+	TakeID            string            `json:"take_id"`
+	State             string            `json:"state"`
+	MaxCorrectionMS   int               `json:"max_correction_ms"`
+	TargetFPSNum      int               `json:"target_fps_num,omitempty"`
+	TargetFPSDen      int               `json:"target_fps_den,omitempty"`
+	MeasuredOffsetMS  int               `json:"measured_offset_ms"`
+	AppliedOffsetMS   int               `json:"applied_offset_ms"`
+	AppliedSamples    int               `json:"applied_samples"`
+	AudioOutputDigest string            `json:"audio_output_digest,omitempty"`
+	VideoOutputDigest string            `json:"video_output_digest,omitempty"`
+	SourcePicture     PictureDescriptor `json:"source_picture,omitempty"`
+	OutputPicture     PictureDescriptor `json:"output_picture,omitempty"`
+	BundleDigest      string            `json:"bundle_digest,omitempty"`
+	BundleBytes       int               `json:"bundle_bytes,omitempty"`
+	ErrorCode         string            `json:"error_code,omitempty"`
+	ErrorMessage      string            `json:"error_message,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 type ConformReceipt struct {
-	SchemaVersion    int       `json:"schema_version"`
-	ConformID        string    `json:"conform_id"`
-	AnalysisID       string    `json:"analysis_id"`
-	TakeID           string    `json:"take_id"`
-	MeasuredOffsetMS int       `json:"measured_offset_ms"`
-	AppliedOffsetMS  int       `json:"applied_offset_ms"`
-	AppliedSamples   int       `json:"applied_samples"`
-	AudioDigest      string    `json:"audio_digest"`
-	VideoDigest      string    `json:"video_digest"`
-	InputTakeDigest  string    `json:"input_take_digest"`
-	CreatedAt        time.Time `json:"created_at"`
+	SchemaVersion    int    `json:"schema_version"`
+	ConformID        string `json:"conform_id"`
+	AnalysisID       string `json:"analysis_id"`
+	TakeID           string `json:"take_id"`
+	MeasuredOffsetMS int    `json:"measured_offset_ms"`
+	AppliedOffsetMS  int    `json:"applied_offset_ms"`
+	AppliedSamples   int    `json:"applied_samples"`
+	AudioDigest      string `json:"audio_digest"`
+	VideoDigest      string `json:"video_digest"`
+	InputTakeDigest  string `json:"input_take_digest"`
+	// FrameRateConverted reports whether the output picture was re-timed to a
+	// different constant frame rate. It stays false for legacy conforms that
+	// only re-emit the source picture geometry.
+	FrameRateConverted bool              `json:"frame_rate_converted"`
+	SourcePicture      PictureDescriptor `json:"source_picture,omitempty"`
+	OutputPicture      PictureDescriptor `json:"output_picture,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
 }
 
 type CreateTakeInput struct {
@@ -110,6 +135,10 @@ type CreateAnalysisInput struct {
 type CreateConformInput struct {
 	ConformID       string
 	MaxCorrectionMS int
+	// TargetFPSNum/TargetFPSDen request a constant frame-rate conversion. A nil
+	// pair keeps the historical behavior and re-emits the source frame rate.
+	TargetFPSNum *int
+	TargetFPSDen *int
 }
 
 type TakeResult struct {

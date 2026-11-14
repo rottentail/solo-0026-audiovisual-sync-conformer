@@ -49,14 +49,22 @@ analysis stores one stable error code and never exposes a usable event pair.
 
 A `ConformJob` belongs to one ready analysis. It corrects the audio by the
 inverse of the measured offset while preserving picture frame order and Y4M
-geometry. The job commits a ZIP bundle containing:
+geometry. A conform may additionally request delivery of the picture at a
+different constant frame rate. The conversion preserves the source playback
+duration by re-timing frames (nearest-center selection, no interpolation and
+no audio resampling); it never rewrites only the frame-rate label, which
+would fast- or slow-play the material. Requests without a target frame rate
+keep the historical behavior and re-emit the source rate and frame count. The
+job commits a ZIP bundle containing:
 
 - `audio-aligned.wav`;
 - `video-conformed.y4m`;
 - `conform-receipt.json`.
 
-The completed receipt digest and byte count always match the visible ZIP.
-Failed jobs never expose a bundle route.
+The receipt records separate source and output picture descriptors so the
+admitted source picture and the actually delivered picture can always be
+distinguished, including their digests. The completed receipt digest and byte
+count always match the visible ZIP. Failed jobs never expose a bundle route.
 
 ## State machines
 
@@ -128,8 +136,11 @@ Entry point: `POST /v1/sync-analyses/{analysis_id}/conforms`
 
 1. Require a ready analysis and enforce the requested correction ceiling.
 2. Align audio samples by the inverse measured offset.
-3. Re-emit the Y4M header and frames with validated geometry.
-4. Build the receipt, ZIP bundle, and digests in a temporary directory.
+3. When a target frame rate is supplied, re-time the picture to that constant
+   rate while preserving playback duration; otherwise re-emit the Y4M header
+   and frames with the validated source geometry and rate.
+4. Build the receipt with source and output picture descriptors, then the ZIP
+   bundle and digests in a temporary directory.
 5. Commit the directory atomically and complete the job.
 
 Success returns a completed job whose receipt and bundle routes agree. Failure
@@ -142,8 +153,8 @@ returns a terminal job with a stable error code and no readable bundle.
 - `internal/service`: workflow orchestration, idempotency, lifecycle
   transitions, and failure propagation.
 - `internal/domain`: identifiers, records, state rules, and stable errors.
-- `internal/media`: WAV and Y4M probing, signal detection, audio alignment, and
-  deterministic media encoding.
+- `internal/media`: WAV and Y4M probing, signal detection, audio alignment,
+  duration-preserving frame-rate conversion, and deterministic media encoding.
 - `internal/storage`: namespaced persistence, per-identifier locking, atomic
   files, and atomic directory publication.
 
@@ -183,10 +194,13 @@ interfaces below:
 - WAV chunk bounds and Y4M frame-count agreement with declared geometry;
 - onset and flash detection on calibration media with known event times;
 - positive and negative audio corrections around the measured offset;
+- constant frame-rate conversion preserving duration, clapper and tail flash
+  timing, and unchanged audio speed, including rejection of a label-only rate
+  rewrite and of conversions beyond the frame-count budget;
 - terminal-state behavior for invalid and boundary requests;
 - atomic visibility of take directories and conform bundles.
 
-Until that stage, three bounded production workflow checks exercise the real
+Until that stage, four bounded production workflow checks exercise the real
 HTTP routes, storage layout, media transforms, and persisted terminal records.
 They are not a substitute for the later test suite.
 

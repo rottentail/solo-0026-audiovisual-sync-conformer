@@ -13,7 +13,10 @@ const (
 	CalibrationAudioMS    = 1000
 	CalibrationAudioEvent = 500
 	CalibrationVideoEvent = 9
-	CalibrationFPS        = 24
+	// CalibrationTailEvent marks the final frame so reviewers can verify
+	// picture timing at the end of the take, not only at the clapper.
+	CalibrationTailEvent = CalibrationFrames - 1
+	CalibrationFPS       = 24
 )
 
 func CalibrationPair() ([]byte, []byte, error) {
@@ -37,7 +40,7 @@ func CalibrationPair() ([]byte, []byte, error) {
 	for frameIndex := 0; frameIndex < CalibrationFrames; frameIndex++ {
 		frame := make([]byte, frameBytes)
 		luma := byte(32)
-		if frameIndex == CalibrationVideoEvent {
+		if frameIndex == CalibrationVideoEvent || frameIndex == CalibrationTailEvent {
 			luma = 220
 		}
 		for y := 0; y < height; y++ {

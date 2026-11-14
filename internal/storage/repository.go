@@ -235,13 +235,15 @@ func (r *Repository) CreateConform(record domain.ConformJob) (domain.ConformJob,
 	switch {
 	case err == nil:
 		if existing.AnalysisID == record.AnalysisID &&
-			existing.MaxCorrectionMS == record.MaxCorrectionMS {
+			existing.MaxCorrectionMS == record.MaxCorrectionMS &&
+			existing.TargetFPSNum == record.TargetFPSNum &&
+			existing.TargetFPSDen == record.TargetFPSDen {
 			return existing, false, nil
 		}
 		return domain.ConformJob{}, false, domain.NewError(
 			"conform_conflict",
 			409,
-			"conform %s already exists with a different analysis or correction ceiling",
+			"conform %s already exists with a different analysis, correction ceiling, or target frame rate",
 			record.ID,
 		)
 	case !domain.IsErrorCode(err, "conform_not_found"):

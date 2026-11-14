@@ -195,12 +195,19 @@ func (s *Service) CreateConform(
 			analysisID,
 		)
 	}
+	targetFPSNum, targetFPSDen := 0, 0
+	if input.TargetFPSNum != nil && input.TargetFPSDen != nil {
+		targetFPSNum = *input.TargetFPSNum
+		targetFPSDen = *input.TargetFPSDen
+	}
 	record := domain.ConformJob{
 		ID:               input.ConformID,
 		AnalysisID:       analysis.ID,
 		TakeID:           analysis.TakeID,
 		State:            domain.ConformStateQueued,
 		MaxCorrectionMS:  input.MaxCorrectionMS,
+		TargetFPSNum:     targetFPSNum,
+		TargetFPSDen:     targetFPSDen,
 		MeasuredOffsetMS: *analysis.OffsetMS,
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
@@ -247,30 +254,55 @@ func (s *Service) renderConform(record domain.ConformJob) (domain.ConformResult,
 	if err != nil {
 		return s.failConform(record, domain.AsError(err).Code, domain.AsError(err).Message)
 	}
-	conformedVideo, videoInfo, err := media.NormalizeY4M(video)
-	if err != nil {
-		return s.failConform(record, "video_conform_failed", err.Error())
-	}
 	take, err := s.repository.GetTake(record.TakeID)
 	if err != nil {
 		return s.failConform(record, "take_media_unavailable", err.Error())
 	}
+
+	conversionRequested := record.TargetFPSNum > 0 && record.TargetFPSDen > 0
+	var conformedVideo []byte
+	var videoInfo domain.VideoInfo
+	if conversionRequested {
+		conformedVideo, videoInfo, err = media.ConvertY4MFrameRate(
+			video,
+			record.TargetFPSNum,
+			record.TargetFPSDen,
+		)
+		if err != nil {
+			return s.failConform(record, "frame_rate_conversion_failed", err.Error())
+		}
+	} else {
+		// Legacy path: re-emit the source geometry and frame rate unchanged.
+		conformedVideo, videoInfo, err = media.NormalizeY4M(video)
+		if err != nil {
+			return s.failConform(record, "video_conform_failed", err.Error())
+		}
+	}
+
 	record.AppliedOffsetMS = record.MeasuredOffsetMS
 	record.AppliedSamples = alignedAudio.AppliedSamples
 	record.AudioOutputDigest = alignedAudio.Digest
 	record.VideoOutputDigest = videoInfo.Digest
+	record.SourcePicture = media.PictureDescriptorFromVideo(take.Video)
+	record.OutputPicture = media.PictureDescriptorFromVideo(videoInfo)
+	// The receipt flag reflects the actual delivered picture, not merely the
+	// request: a target equal to the source rate re-times nothing.
+	rateConverted := videoInfo.FPSNum != take.Video.FPSNum || videoInfo.FPSDen != take.Video.FPSDen
 	receipt := domain.ConformReceipt{
-		SchemaVersion:    1,
-		ConformID:        record.ID,
-		AnalysisID:       record.AnalysisID,
-		TakeID:           record.TakeID,
-		MeasuredOffsetMS: record.MeasuredOffsetMS,
-		AppliedOffsetMS:  record.AppliedOffsetMS,
-		AppliedSamples:   record.AppliedSamples,
-		AudioDigest:      alignedAudio.Digest,
-		VideoDigest:      videoInfo.Digest,
-		InputTakeDigest:  take.Digest,
-		CreatedAt:        record.CreatedAt,
+		SchemaVersion:      2,
+		ConformID:          record.ID,
+		AnalysisID:         record.AnalysisID,
+		TakeID:             record.TakeID,
+		MeasuredOffsetMS:   record.MeasuredOffsetMS,
+		AppliedOffsetMS:    record.AppliedOffsetMS,
+		AppliedSamples:     record.AppliedSamples,
+		AudioDigest:        alignedAudio.Digest,
+		VideoDigest:        videoInfo.Digest,
+		InputTakeDigest:    take.Digest,
+		FrameRateConverted: rateConverted,
+		SourcePicture:      record.SourcePicture,
+		OutputPicture:      record.OutputPicture,
+		CreatedAt:          record.CreatedAt,
 	}
 	bundle, receiptData, err := media.BuildReviewBundle(alignedAudio.WAV, conformedVideo, receipt)
 	if err != nil {

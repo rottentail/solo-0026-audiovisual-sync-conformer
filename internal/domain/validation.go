@@ -18,6 +18,8 @@ const (
 	DefaultMaxOffsetMS     = 1000
 	DefaultMaxCorrectionMS = 500
 	MaxCorrectionMS        = 5000
+	MaxFrameRateNum        = 120
+	MaxFrameRateDen        = 1001
 )
 
 func ValidateCreateTake(input CreateTakeInput) error {
@@ -66,6 +68,32 @@ func ValidateCreateConform(input CreateConformInput) error {
 			400,
 			"max_correction_ms must be between 1 and %d",
 			MaxCorrectionMS,
+		)
+	}
+	return ValidateTargetFrameRate(input.TargetFPSNum, input.TargetFPSDen)
+}
+
+// ValidateTargetFrameRate enforces an all-or-nothing rational frame-rate pair.
+// A nil pair means no conversion was requested and preserves the historical
+// conform behavior. Both members must be present and within the Y4M bounds.
+func ValidateTargetFrameRate(num, den *int) error {
+	if num == nil && den == nil {
+		return nil
+	}
+	if num == nil || den == nil {
+		return NewError(
+			"invalid_request",
+			400,
+			"target_fps_num and target_fps_den must be provided together",
+		)
+	}
+	if *num <= 0 || *num > MaxFrameRateNum || *den <= 0 || *den > MaxFrameRateDen {
+		return NewError(
+			"invalid_request",
+			400,
+			"target frame rate must be between 1:%d and %d:1",
+			MaxFrameRateDen,
+			MaxFrameRateNum,
 		)
 	}
 	return nil

@@ -118,20 +118,9 @@ func detectAudioOnset(clip AudioClip) (int, float64, error) {
 }
 
 func detectPictureFlash(clip VideoClip) (int, float64, error) {
-	if len(clip.Frames) == 0 {
-		return 0, 0, fmt.Errorf("picture payload has no frames")
-	}
-	luma := make([]float64, len(clip.Frames))
-	for index, frame := range clip.Frames {
-		planeSize := clip.Info.Width * clip.Info.Height
-		if len(frame) < planeSize {
-			return 0, 0, fmt.Errorf("picture frame is shorter than its luma plane")
-		}
-		var sum int
-		for _, value := range frame[:planeSize] {
-			sum += int(value)
-		}
-		luma[index] = float64(sum) / float64(planeSize)
+	luma, err := frameLuma(clip)
+	if err != nil {
+		return 0, 0, err
 	}
 	baselineValues := append([]float64(nil), luma...)
 	sort.Float64s(baselineValues)
@@ -146,8 +135,8 @@ func detectPictureFlash(clip VideoClip) (int, float64, error) {
 	if delta < 18 {
 		return 0, 0, fmt.Errorf("picture flash has insufficient contrast")
 	}
-	eventIndex := -1
 	threshold := baseline + delta*0.55
+	eventIndex := -1
 	for index, value := range luma {
 		if value >= threshold {
 			eventIndex = index
@@ -160,6 +149,59 @@ func detectPictureFlash(clip VideoClip) (int, float64, error) {
 	eventMS := eventIndex * 1000 * clip.Info.FPSDen / clip.Info.FPSNum
 	prominence := math.Min(1, delta/80)
 	return eventMS, math.Round(prominence*1000) / 1000, nil
+}
+
+// frameLuma computes the mean luma of every frame in display order.
+func frameLuma(clip VideoClip) ([]float64, error) {
+	if len(clip.Frames) == 0 {
+		return nil, fmt.Errorf("picture payload has no frames")
+	}
+	luma := make([]float64, len(clip.Frames))
+	for index, frame := range clip.Frames {
+		planeSize := clip.Info.Width * clip.Info.Height
+		if len(frame) < planeSize {
+			return nil, fmt.Errorf("picture frame is shorter than its luma plane")
+		}
+		var sum int
+		for _, value := range frame[:planeSize] {
+			sum += int(value)
+		}
+		luma[index] = float64(sum) / float64(planeSize)
+	}
+	return luma, nil
+}
+
+// locatePictureFlashes returns the frame indices of the first and last frames
+// that clear the flash threshold. A calibration clip carries one flash near the
+// clapper and another at the tail, so both indices let a reviewer confirm
+// picture timing at the start and at the end of the take.
+func locatePictureFlashes(clip VideoClip) (firstIndex, lastIndex int, err error) {
+	luma, err := frameLuma(clip)
+	if err != nil {
+		return 0, 0, err
+	}
+	baselineValues := append([]float64(nil), luma...)
+	sort.Float64s(baselineValues)
+	baseline := baselineValues[len(baselineValues)/2]
+	maxValue := baselineValues[len(baselineValues)-1]
+	delta := maxValue - baseline
+	if delta < 18 {
+		return 0, 0, fmt.Errorf("picture flash has insufficient contrast")
+	}
+	threshold := baseline + delta*0.55
+	firstIndex, lastIndex = -1, -1
+	for index, value := range luma {
+		if value >= threshold {
+			if firstIndex < 0 {
+				firstIndex = index
+			}
+			lastIndex = index
+		}
+	}
+	if firstIndex < 0 {
+		return 0, 0, fmt.Errorf("picture flash was not found")
+	}
+	return firstIndex, lastIndex, nil
 }
 
 func maxInt(a, b int) int {

@@ -11,6 +11,8 @@ The implementation includes:
 - audio-onset and picture-flash detection with a confidence value;
 - signed drift analysis and a stable threshold policy;
 - sample-accurate audio alignment;
+- duration-preserving constant frame-rate picture conversion with a
+  nearest-center re-time and source/output picture descriptors in the receipt;
 - durable take, analysis, and conform states;
 - per-identifier locking and atomic directory publication;
 - a deterministic ZIP bundle with a matching receipt.
@@ -113,6 +115,41 @@ The audio is aligned earlier for a positive measured offset and later for a
 negative offset. The request fails with `correction_limit_exceeded` when the
 measured correction is larger than `max_correction_ms`.
 
+#### Optional constant frame-rate conversion
+
+Add `target_fps_num` and `target_fps_den` to deliver the picture at a
+different constant frame rate while keeping the original playback duration and
+leaving the audio speed untouched:
+
+```json
+{
+  "conform_id": "review-a-30fps",
+  "max_correction_ms": 250,
+  "target_fps_num": 30,
+  "target_fps_den": 1
+}
+```
+
+Both fields must be provided together (a half-supplied pair returns
+`invalid_request`); the numerator is bounded by 120 and the denominator by
+1001, matching the accepted Y4M range. The converter re-times the picture by
+selecting the source frame whose display interval is nearest to each output
+frame center (nearest-center, no interpolation). The output frame count is
+chosen so the output duration equals the source duration to within one output
+frame period, and a conversion that would exceed the 1200-frame picture limit
+fails with `frame_rate_conversion_failed` instead of truncating material.
+
+This is a genuine re-time, not a header rewrite: changing only the rate label
+would fast- or slow-play the stream, so the frame count and frame-to-timeline
+mapping are always recomputed. The audio is never resampled; its sample rate,
+channel count, and sample count are unchanged, so its speed and duration are
+preserved.
+
+Omitting the target frame rate keeps the historical behavior: the source
+picture is re-emitted with its original rate, geometry, and frame count, and
+the receipt records `"frame_rate_converted": false`. Reusing a conform
+identifier with a different target frame rate returns `conform_conflict`.
+
 ### Read a conform
 
 - `GET /v1/conforms/{conform_id}`
@@ -126,6 +163,14 @@ audio-aligned.wav
 video-conformed.y4m
 conform-receipt.json
 ```
+
+The receipt distinguishes the admitted source picture from the picture
+actually written to the bundle through separate `source_picture` and
+`output_picture` descriptors (rate, frame count, duration, geometry, and
+digest), alongside `frame_rate_converted`. The top-level `video_digest`
+always matches the bytes of the delivered `video-conformed.y4m`, so a
+reviewer can tell at a glance whether a conversion happened and verify both
+streams independently.
 
 ## Data layout
 
@@ -168,12 +213,20 @@ Run one workflow at a time:
 go run ./cmd/syncflowcheck -workflow admit-take
 go run ./cmd/syncflowcheck -workflow analyze-sync
 go run ./cmd/syncflowcheck -workflow render-conform
+go run ./cmd/syncflowcheck -workflow convert-frame-rate
 ```
 
 Each check starts the real loopback HTTP service, generates a bounded
 calibration pair through the production media package, completes the named
 workflow, and verifies persisted state or artifact bytes. The temporary data
 root is removed when the process exits.
+
+The `convert-frame-rate` check renders both a legacy conform (no target rate)
+and a 24 fps to 30 fps conform, then confirms the clapper flash and tail flash
+stay within one output frame of their source times, the playback duration is
+preserved, the audio samples are unchanged, the receipt separates source and
+output picture descriptors, and a label-only rate rewrite would be rejected.
+It also exercises a fractional rate and the conform-identifier conflict rule.
 
 ## Media boundaries
 

@@ -18,6 +18,10 @@
     {
       "workflow_id": "render-conform",
       "command": "go run ./cmd/syncflowcheck -workflow render-conform"
+    },
+    {
+      "workflow_id": "convert-frame-rate",
+      "command": "go run ./cmd/syncflowcheck -workflow convert-frame-rate"
     }
   ]
 }

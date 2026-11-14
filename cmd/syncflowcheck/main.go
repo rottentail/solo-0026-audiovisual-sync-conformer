@@ -51,6 +51,8 @@ func main() {
 		err = runAnalyzeCheck(ctx)
 	case "render-conform":
 		err = runRenderCheck(ctx)
+	case "convert-frame-rate":
+		err = runFrameRateCheck(ctx)
 	default:
 		err = fmt.Errorf("unknown workflow %q", *workflow)
 	}
@@ -316,6 +318,267 @@ func runRenderCheck(ctx *checkContext) error {
 		return fmt.Errorf("failed correction exposed a bundle: %d %s", response.StatusCode, body)
 	}
 	return nil
+}
+
+func runFrameRateCheck(ctx *checkContext) error {
+	const (
+		takeID     = "rate-take-01"
+		analysisID = "rate-analysis-01"
+	)
+	if err := admitTake(ctx, takeID); err != nil {
+		return err
+	}
+	if err := createAnalysis(ctx, takeID, analysisID); err != nil {
+		return err
+	}
+
+	sourceAudio, err := media.MeasureAudioTiming(ctx.audio)
+	if err != nil {
+		return err
+	}
+	sourcePicture, err := media.MeasurePictureTiming(ctx.video)
+	if err != nil {
+		return err
+	}
+	if sourcePicture.FirstFlashMS != 375 || sourcePicture.LastFlashFrame != media.CalibrationTailEvent {
+		return fmt.Errorf(
+			"source calibration flash timing is unexpected (first=%dms,lastFrame=%d)",
+			sourcePicture.FirstFlashMS,
+			sourcePicture.LastFlashFrame,
+		)
+	}
+
+	// A request without a target frame rate must keep the historical behavior.
+	legacyID := "rate-conform-legacy"
+	response, body, err := ctx.requestJSON(
+		http.MethodPost,
+		"/v1/sync-analyses/"+analysisID+"/conforms",
+		map[string]any{
+			"conform_id":        legacyID,
+			"max_correction_ms": 250,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf("legacy conform returned %d: %s", response.StatusCode, body)
+	}
+	legacyBundle, err := fetchBundle(ctx, legacyID)
+	if err != nil {
+		return err
+	}
+	var legacyReceipt domain.ConformReceipt
+	if err := json.Unmarshal(legacyBundle["conform-receipt.json"], &legacyReceipt); err != nil {
+		return fmt.Errorf("decode legacy receipt: %w", err)
+	}
+	if legacyReceipt.FrameRateConverted {
+		return fmt.Errorf("legacy request was marked as a frame-rate conversion")
+	}
+	legacyPicture, err := media.MeasurePictureTiming(legacyBundle["video-conformed.y4m"])
+	if err != nil {
+		return err
+	}
+	if legacyPicture.FPSNum != sourcePicture.FPSNum || legacyPicture.FPSDen != sourcePicture.FPSDen ||
+		legacyPicture.FrameCount != sourcePicture.FrameCount {
+		return fmt.Errorf("legacy conform altered the picture rate or frame count")
+	}
+
+	// Convert 24 fps to 30 fps while preserving playback duration.
+	const (
+		conformID  = "rate-conform-30"
+		targetNum  = 30
+		targetDen  = 1
+		wantFrames = 30
+	)
+	response, body, err = ctx.requestJSON(
+		http.MethodPost,
+		"/v1/sync-analyses/"+analysisID+"/conforms",
+		map[string]any{
+			"conform_id":        conformID,
+			"max_correction_ms": 250,
+			"target_fps_num":    targetNum,
+			"target_fps_den":    targetDen,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf("frame-rate conform returned %d: %s", response.StatusCode, body)
+	}
+	var job domain.ConformJob
+	if err := json.Unmarshal(body, &job); err != nil {
+		return fmt.Errorf("decode frame-rate conform: %w", err)
+	}
+	if job.State != domain.ConformStateCompleted {
+		return fmt.Errorf("frame-rate conform did not complete: %s", job.ErrorMessage)
+	}
+	if job.TargetFPSNum != targetNum || job.TargetFPSDen != targetDen {
+		return fmt.Errorf("job did not record the requested target frame rate")
+	}
+	if job.SourcePicture.FPSNum != sourcePicture.FPSNum || job.OutputPicture.FPSNum != targetNum {
+		return fmt.Errorf("job record does not separate source and output picture rates")
+	}
+
+	bundle, err := fetchBundle(ctx, conformID)
+	if err != nil {
+		return err
+	}
+	videoBytes := bundle["video-conformed.y4m"]
+	outputPicture, err := media.MeasurePictureTiming(videoBytes)
+	if err != nil {
+		return err
+	}
+	if outputPicture.FPSNum != targetNum || outputPicture.FPSDen != targetDen {
+		return fmt.Errorf("output header rate is %d:%d, want %d:%d", outputPicture.FPSNum, outputPicture.FPSDen, targetNum, targetDen)
+	}
+	if outputPicture.FrameCount != wantFrames {
+		return fmt.Errorf("output has %d frames, want %d (duration-preserving re-time)", outputPicture.FrameCount, wantFrames)
+	}
+	if err := media.VerifyPreservedTiming(sourcePicture, outputPicture); err != nil {
+		return fmt.Errorf("picture timing check failed: %w", err)
+	}
+
+	outputAudio, err := media.MeasureAudioTiming(bundle["audio-aligned.wav"])
+	if err != nil {
+		return err
+	}
+	if err := media.VerifyUnchangedAudio(sourceAudio, outputAudio); err != nil {
+		return fmt.Errorf("audio was re-rated: %w", err)
+	}
+
+	// The clapper flash and aligned audio must still line up at the new rate.
+	measurement, err := media.AnalyzeSync(bundle["audio-aligned.wav"], videoBytes)
+	if err != nil {
+		return fmt.Errorf("analyze converted bundle: %w", err)
+	}
+	tolerance := outputPicture.FramePeriodMS()
+	if measurement.OffsetMS < -tolerance || measurement.OffsetMS > tolerance {
+		return fmt.Errorf("converted bundle sync offset %d ms exceeds frame period %d ms", measurement.OffsetMS, tolerance)
+	}
+
+	var receipt domain.ConformReceipt
+	if err := json.Unmarshal(bundle["conform-receipt.json"], &receipt); err != nil {
+		return fmt.Errorf("decode receipt: %w", err)
+	}
+	if !receipt.FrameRateConverted {
+		return fmt.Errorf("receipt does not flag the frame-rate conversion")
+	}
+	if receipt.SourcePicture.FPSNum != sourcePicture.FPSNum ||
+		receipt.SourcePicture.FrameCount != sourcePicture.FrameCount ||
+		receipt.OutputPicture.FPSNum != targetNum ||
+		receipt.OutputPicture.FrameCount != wantFrames {
+		return fmt.Errorf("receipt does not distinguish source and output picture")
+	}
+	if receipt.VideoDigest != receipt.OutputPicture.Digest || receipt.VideoDigest == receipt.SourcePicture.Digest {
+		return fmt.Errorf("receipt picture digests do not describe the actual output")
+	}
+	if receipt.OutputPicture.DurationMS != sourcePicture.DurationMS {
+		return fmt.Errorf("output duration %d ms differs from source %d ms", receipt.OutputPicture.DurationMS, sourcePicture.DurationMS)
+	}
+
+	// Reusing the conform identifier with a different target rate must conflict.
+	response, body, err = ctx.requestJSON(
+		http.MethodPost,
+		"/v1/sync-analyses/"+analysisID+"/conforms",
+		map[string]any{
+			"conform_id":        conformID,
+			"max_correction_ms": 250,
+			"target_fps_num":    25,
+			"target_fps_den":    1,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusConflict || errorCode(body) != "conform_conflict" {
+		return fmt.Errorf("rate change on existing id returned %d: %s", response.StatusCode, body)
+	}
+
+	// A half-supplied frame-rate pair is a request error, not a silent legacy run.
+	response, body, err = ctx.requestJSON(
+		http.MethodPost,
+		"/v1/sync-analyses/"+analysisID+"/conforms",
+		map[string]any{
+			"conform_id":        "rate-conform-bad",
+			"max_correction_ms": 250,
+			"target_fps_num":    30,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusBadRequest || errorCode(body) != "invalid_request" {
+		return fmt.Errorf("half frame-rate pair returned %d: %s", response.StatusCode, body)
+	}
+
+	// A fractional delivery rate (47:2 = 23.5 fps) must also preserve the
+	// timeline through the same duration-preserving transform, proving the
+	// path is not hard-wired to integer frame rates.
+	if err := checkRationalRate(ctx, analysisID, "rate-conform-fractional", 47, 2, sourcePicture, sourceAudio); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkRationalRate(
+	ctx *checkContext,
+	analysisID, conformID string,
+	num, den int,
+	sourcePicture media.PictureTiming,
+	sourceAudio media.AudioTiming,
+) error {
+	response, body, err := ctx.requestJSON(
+		http.MethodPost,
+		"/v1/sync-analyses/"+analysisID+"/conforms",
+		map[string]any{
+			"conform_id":        conformID,
+			"max_correction_ms": 250,
+			"target_fps_num":    num,
+			"target_fps_den":    den,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf("rational-rate conform returned %d: %s", response.StatusCode, body)
+	}
+	bundle, err := fetchBundle(ctx, conformID)
+	if err != nil {
+		return err
+	}
+	outputPicture, err := media.MeasurePictureTiming(bundle["video-conformed.y4m"])
+	if err != nil {
+		return err
+	}
+	if outputPicture.FPSNum != num || outputPicture.FPSDen != den {
+		return fmt.Errorf("rational output rate is %d:%d", outputPicture.FPSNum, outputPicture.FPSDen)
+	}
+	if err := media.VerifyPreservedTiming(sourcePicture, outputPicture); err != nil {
+		return fmt.Errorf("rational-rate timing check failed: %w", err)
+	}
+	outputAudio, err := media.MeasureAudioTiming(bundle["audio-aligned.wav"])
+	if err != nil {
+		return err
+	}
+	return media.VerifyUnchangedAudio(sourceAudio, outputAudio)
+}
+
+func fetchBundle(ctx *checkContext, conformID string) (map[string][]byte, error) {
+	response, bundle, err := ctx.requestJSON(
+		http.MethodGet,
+		"/v1/conforms/"+conformID+"/bundle",
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bundle read for %s returned %d: %s", conformID, response.StatusCode, bundle)
+	}
+	return readZip(bundle)
 }
 
 func admitTake(ctx *checkContext, id string) error {
